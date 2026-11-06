@@ -3,7 +3,7 @@ WHMX TOOL - LẤY DỮ LIỆU 物华弥新 TỪ MUMU
 
 Tool đọc thẳng dữ liệu game trong giả lập MuMu qua adb rồi xuất ra:
 ảnh, audio (mp3), video (mp4), spine nhân vật, toàn bộ cốt truyện (txt),
-ảnh CG theo truyện, 冬谷归档 (Đông Cốc quy đáng), và phần thay đổi của mỗi bản cập nhật.
+ảnh CG theo truyện, 冬谷归档 (Đông Cốc quy đáng), hoán chương (焕彰), và phần thay đổi của mỗi bản cập nhật.
 Tool chỉ ĐỌC dữ liệu trong máy ảo, không đăng nhập, không gửi gì lên server game.
 
 
@@ -52,10 +52,12 @@ MuMu phải đang mở. Game nên TẮT trong lúc chạy.
   dongcoc    冬谷归档: tạp chí, hồ sơ, hồi tưởng sự kiện, ngoại cần kiến văn, ảnh kỷ niệm.
              Một file html mở bằng trình duyệt (có sẵn ảnh) + thư mục images\ + raw\.
                                                       → Xuat\DongCoc_QuyDang\
+  hoanchuong Mọi hoán chương (焕彰), mỗi cái một file txt: truyện, hiệu ứng kèm giải thích trạng thái,
+             chỉ số từng cấp, nguyên liệu, ngày mở/đóng, màn thử.  → Xuat\HoanChuong_<bản>\
   update     So bản game hiện tại với bản trước: chỉ xuất phần MỚI và phần ĐÃ SỬA.
                                                       → Xuat\CapNhat_<cũ>_den_<mới>\
                --tu r3164         so từ một bản cụ thể trong PhienBan\
-  all        Chạy lần lượt: images, audio, video, spine, lore, cg, dongcoc.
+  all        Chạy lần lượt: images, audio, video, spine, lore, cg, dongcoc, hoanchuong.
 
 Tuỳ chọn chung (đặt TRƯỚC tên lệnh):
   --out "D:\ThuMuc"   thư mục xuất
@@ -83,6 +85,7 @@ Thư mục CapNhat_<cũ>_den_<mới>\ gồm:
   MasterData_thaydoi\    mỗi bảng có thay đổi một file json:
                            "them" = dòng mới, "sua" = trường đã đổi [cũ, mới], "xoa" = dòng bị xoá
   Lore_thaydoi\          file cốt truyện mới hoặc đã sửa (cùng định dạng với lệnh lore)
+  HoanChuong_thaydoi\    hoán chương mới hoặc đã sửa (cả khi chỉ đổi ngày mở/đóng)
 Muốn so được thì phải có bản cũ trong PhienBan\, tức là phải chạy tool TRƯỚC khi game cập nhật.
 Mỗi bản tốn khoảng 170 MB trong PhienBan\. Đừng xoá thư mục này.
 

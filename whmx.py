@@ -811,6 +811,10 @@ def cmd_update(ctx: Ctx, args) -> int:
     l_add, l_mod = diff_dirs(lo, ln, out / "Lore_thaydoi")
     shutil.rmtree(lo, ignore_errors=True)
     shutil.rmtree(ln, ignore_errors=True)
+    og = story.huanzhang_groups(old)
+    hz = {k for k, v in story.huanzhang_groups(ctx).items() if og.get(k) != v}
+    if hz:
+        story.build_hoanchuong(ctx, out / "HoanChuong_thaydoi", hz)
 
     changed_all = added + changed
     imgs = [x for x in changed_all if not x["Name"].startswith("audio_")]
@@ -834,7 +838,8 @@ def cmd_update(ctx: Ctx, args) -> int:
                f"Video mới/sửa: {len(vids)}",
                f"Bundle sửa không so được từng ảnh/âm (không xuất): {len(blind)}",
                f"Text: {t_add} dòng mới, {t_mod} dòng sửa (Text_thaydoi.txt)",
-               f"Lore: {l_add} file mới, {l_mod} file sửa (Lore_thaydoi/)", "",
+               f"Lore: {l_add} file mới, {l_mod} file sửa (Lore_thaydoi/)",
+               f"Hoán chương mới/sửa: {len(hz)} (HoanChuong_thaydoi/)", "",
                f"Nhân vật mới ({len(new_chars)}):"]
     summary += [f"  {r.get('id')} {r.get('namelanText') or r.get('name') or ''}" for r in new_chars]
     summary += ["", f"MasterData đổi ({len(md_sum)} bảng, chi tiết MasterData_thaydoi/<bảng>.json):", *md_sum]
@@ -903,9 +908,10 @@ def main() -> int:
     sub.add_parser("lore", help="toàn bộ cốt truyện, phòng trà, thoại trận (txt)")
     sub.add_parser("cg", help="ảnh CG theo từng truyện")
     sub.add_parser("dongcoc", help="冬谷归档: tạp chí, hồ sơ, hồi tưởng, ngoại cần, ảnh kỷ niệm (html + ảnh)")
+    sub.add_parser("hoanchuong", help="焕彰: truyện, hiệu ứng, chỉ số, nguyên liệu của mọi hoán chương (txt)")
     p = sub.add_parser("update", help="so bản hiện tại với bản trước: ảnh/audio/video/text/lore mới")
     p.add_argument("--tu", default="", help="so từ bản này (tên thư mục trong PhienBan/), mặc định bản trước đó")
-    sub.add_parser("all", help="images + audio + video + spine + lore + cg + dongcoc")
+    sub.add_parser("all", help="images + audio + video + spine + lore + cg + dongcoc + hoanchuong")
     args = ap.parse_args()
 
     if args.cmd == "doctor":
@@ -915,7 +921,7 @@ def main() -> int:
     ctx = Ctx(dev, snapshot(dev))
     out = Path(args.out)
     say(f"Bản game: {ctx.snap.name}  ({dev.pkg} trên {dev.serial})")
-    cmds = ["images", "audio", "video", "spine", "lore", "cg", "dongcoc"] if args.cmd == "all" else [args.cmd]
+    cmds = ["images", "audio", "video", "spine", "lore", "cg", "dongcoc", "hoanchuong"] if args.cmd == "all" else [args.cmd]
     rc = 0
     try:
         for c in cmds:
@@ -938,6 +944,8 @@ def main() -> int:
                 story.build_cg(ctx, lore, out / "CG_TheoTruyen")
             elif c == "dongcoc":
                 story.build_dongcoc(ctx, out / "DongCoc_QuyDang")
+            elif c == "hoanchuong":
+                story.build_hoanchuong(ctx, out / f"HoanChuong_{ctx.snap.name}")
             elif c == "update":
                 rc |= cmd_update(ctx, args)
     finally:

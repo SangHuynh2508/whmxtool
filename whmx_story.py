@@ -1,4 +1,4 @@
-"""Story side of the WHMX tool: lore text, story CG, 冬谷归档. All read through whmx.Ctx."""
+"""Story side of the WHMX tool: lore text, story CG, 冬谷归档, 焕彰. All read through whmx.Ctx."""
 from __future__ import annotations
 
 import base64
@@ -575,3 +575,96 @@ def build_dongcoc(ctx, out: Path) -> None:
         (out / f'_in_{sid}.html').write_text(head + sec.replace('<section', '<section style="margin:0"', 1) + '</main></body></html>', encoding='utf-8')
     (out / '_THIEU.txt').write_text('\n'.join(missing) + '\n', encoding='utf-8')
     print(f'Đông Cốc: {len(toc)} mục, {sum(1 for _ in (out / "images").rglob("*.png"))} ảnh, thiếu {len(missing)} → {out}', flush=True)
+
+
+# ---------------------------------------------------------------- 焕彰 (hoán chương)
+
+_STAT = {"Hp": "生命", "Atk": "攻击", "Def": "物理防御", "PhysicDef": "物理防御", "MagicDef": "法术防御",
+         "Speed": "速度", "Crit": "暴击", "MagicAtk": "法术攻击", "PhysicalAtk": "物理攻击"}
+_untag = lambda s: re.sub(r"</?color[^>]*>", "", s or "").replace("&#10;", "\n")
+
+
+def huanzhang_groups(ctx) -> dict:
+    """(character, trial dungeon) -> BrilliantMap rows: one huanzhang with its lower-rarity stage rows."""
+    groups: dict = {}
+    for r in ctx.rows("BrilliantMap"):
+        groups.setdefault((r["Id"][:5], r.get("DungeonId") or r["Id"]), []).append(r)
+    return groups
+
+
+def build_hoanchuong(ctx, out: Path, keys=None) -> int:
+    """One txt per huanzhang: story, effect + statuses it mentions, stats per level, costs, trial stage.
+    keys: only these huanzhang_groups keys (update), default all."""
+    from datetime import datetime, timedelta, timezone
+    bj = timezone(timedelta(hours=8))
+    date = lambda t: datetime.fromtimestamp(t, bj).strftime("%d/%m/%Y %H:%M") if isinstance(t, int) and t else "?"
+    L = ctx.lang
+    chars = {str(r["id"]): r for r in ctx.rows("characterTable")}
+    talents = {r["id"]: r for r in ctx.rows("talentBankMap")}
+    passive = {(r["GroupId"], r["Level"]): r for r in ctx.rows("characterPassiveSkillMap")}
+    dungeons = {r["id"]: r for r in ctx.rows("dungeonMap")}
+    up = {r["Id"]: r for r in ctx.rows("BrilliantUpMap")}
+    items = {}
+    for t in ("itemMap", "ItemMap", "itemTable"):
+        try:
+            items.update({str(r.get("id") or r.get("Id")): _untag(r.get("nameLanText") or r.get("NameLanText") or r.get("name") or "")
+                          for r in ctx.rows(t)})
+        except Exception:
+            pass
+    bname = {k.removeprefix("SkillLan_Buff_NameLan_"): _untag(v) for k, v in L.items() if k.startswith("SkillLan_Buff_NameLan_")}
+    bdesc = {k.removeprefix("SkillLan_Buff_DescriptionLan_"): _untag(v) for k, v in L.items() if k.startswith("SkillLan_Buff_DescriptionLan_")}
+
+    def stat(p):
+        k, _, v = str(p).partition(",")
+        base, _, kind = k.rpartition("_") if k.endswith(("_FIX", "_PERCENT")) else (k, "", "")
+        return f"{_STAT.get(base, base)} +{v}{'%' if kind == 'PERCENT' else ''}" if v else str(p)
+
+    cost = lambda lst: ", ".join(f"{items.get(str(c['id']), c['id'])} ×{c['count']}" for c in lst or [])
+
+    def glossary(cid, text):
+        res = []
+        for name in dict.fromkeys(re.findall(r"<color=#ff6724>(.*?)</color>", text)):
+            ks = sorted((k for k, v in bname.items() if v == name), key=lambda k: cid not in k)
+            d = next((bdesc[k] for k in ks if bdesc.get(k)), "")
+            if d:
+                res.append(f"  【{name}】 " + re.sub(r"\[EffectParam,\d+\]", "?", d))  # no \ in f-string (py<3.12)
+        return res
+
+    out.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for key, rows in sorted(huanzhang_groups(ctx).items()):
+        if keys is not None and key not in keys:
+            continue
+        cid = key[0]
+        rows = sorted(rows, key=lambda r: r["Id"])
+        main = next((r for r in rows if r.get("IconName")), rows[-1])
+        c = chars.get(cid, {})
+        title = _untag(main.get("IconNameLanText") or main.get("IconName"))
+        lines = [f"{cid} {c.get('namelanText') or c.get('name', '')} ({ctx.vi.get(cid, '')})",
+                 f"焕彰：{title}   icon: {main.get('Icon')}.png",
+                 f"Mở {date(main.get('UnlockDate'))} → đóng {date(main.get('ClosingDate'))} (giờ Bắc Kinh)"]
+        d = dungeons.get(main.get("DungeonId"), {})
+        if d:
+            lines.append(f"Màn thử: {d.get('NameLanText')} ({main['DungeonId']})")
+        lines += ["", "== 故事 (truyện) ==", _untag(main.get("IconInfoLanText") or main.get("IconInfo")), ""]
+        for bid in main.get("Buff") or []:
+            p = passive.get((bid, 1), {})
+            raw = p.get("DescriptionLanText", "")
+            lines += [f"== 效果 (hiệu ứng): {_untag(p.get('NameLanText'))} ==",
+                      re.sub(r"\{(Buff_[^}]+)\}", lambda m: f"\n[{bname.get(m[1], m[1])}] {bdesc.get(m[1], '')}", _untag(raw)), ""]
+            g = glossary(cid, raw)
+            if g:
+                lines += ["Trạng thái nhắc tới:", *g, ""]
+        for r in rows:
+            lines += [f"== {r['Id']} (độ hiếm {r.get('Rare')}) ==",
+                      f"Mở khoá: {cost(r.get('RequireCoin'))}; {cost(r.get('ItemCost1'))}"]
+            for i, lv in enumerate(r.get("PropertyUp") or [], 1):
+                lines.append(f"  Cấp {i}: " + ", ".join(stat(p) for t in lv for p in talents.get(t, {}).get("talentParam1", [])))
+            u = up.get(r["Id"])
+            if u:
+                lines.append(f"  Nâng cấp: {items.get('3', 'coin')} ×{u['Coin']}; {cost(u.get('Res'))}")
+            lines.append("")
+        (out / f"{cid}_{safe(title or main['Id'])}.txt").write_text("\n".join(lines), encoding="utf-8")
+        n += 1
+    print(f"Hoán chương: {n} file → {out}", flush=True)
+    return n
