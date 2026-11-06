@@ -1,0 +1,5 @@
+UnityPy>=1.25,<2
+lz4>=4.4
+pycryptodome>=3.23
+Pillow>=12
+lameenc>=1.9
