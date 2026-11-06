@@ -400,7 +400,25 @@ def _unique(path: Path, used: set) -> Path:
     return path
 
 
-def export_images(src: str, logical: str, paths: list[str], out: str) -> tuple[int, int, str]:
+def _want(target: Path, out_p: Path, h: str, cpath, keep, old, hashes: dict) -> bool:
+    """Record the asset hash; say whether to write it. old = hashes of the previous bundle (compare content),
+    keep = container paths new in this bundle (used when the old content is unknown), both None = everything."""
+    key = n = str(target.relative_to(out_p)).replace("\\", "/").lower()
+    i = 1
+    while key in hashes:
+        i += 1
+        key = f"{n}#{i}"
+    hashes[key] = h
+    if old is not None:
+        return old.get(key) != h
+    return keep is None or cpath in keep
+
+
+def _img_hash(img) -> str:
+    return hashlib.md5(img.tobytes() + f"{img.mode}{img.size}".encode()).hexdigest()[:16]
+
+
+def export_images(src: str, logical: str, paths: list[str], out: str, keep=None, old=None) -> tuple:
     import UnityPy
     UnityPy.config.FALLBACK_UNITY_VERSION = UNITY_VERSION
     env = UnityPy.load(decrypt_ab(Path(src).read_bytes()))
@@ -428,6 +446,7 @@ def export_images(src: str, logical: str, paths: list[str], out: str) -> tuple[i
     errs: list[str] = []
     per_tex: dict[int, int] = {}
     sprite_data = []
+    hashes: dict[str, str] = {}
     for obj in sprites:
         try:
             s = obj.read()
@@ -456,8 +475,10 @@ def export_images(src: str, logical: str, paths: list[str], out: str) -> tuple[i
             folder = fallback
         try:
             img = s.image
-            if img is not None and img.width and img.height:
-                p = _unique(folder / f"{BAD.sub('_', s.m_Name)}.png", used)
+            target = folder / f"{BAD.sub('_', s.m_Name)}.png"
+            if img is not None and img.width and img.height and \
+                    _want(target, out_p, _img_hash(img), apath or by_pid.get(tid), keep, old, hashes):
+                p = _unique(target, used)
                 img.save(p, "PNG")
                 size += p.stat().st_size
                 count += 1
@@ -472,16 +493,19 @@ def export_images(src: str, logical: str, paths: list[str], out: str) -> tuple[i
             if img is None or not img.width:
                 continue
             folder = out_p / map_dir(by_pid[pid]) if pid in by_pid else fallback
-            p = _unique(folder / f"{BAD.sub('_', tex.m_Name)}.png", used)
+            target = folder / f"{BAD.sub('_', tex.m_Name)}.png"
+            if not _want(target, out_p, _img_hash(img), by_pid.get(pid), keep, old, hashes):
+                continue
+            p = _unique(target, used)
             img.save(p, "PNG")
             size += p.stat().st_size
             count += 1
         except Exception as e:
             errs.append(f"tex {pid}: {e}")
-    return count, size, "; ".join(errs)
+    return count, size, "; ".join(errs), hashes
 
 
-def export_audio(src: str, logical: str, paths: list[str], out: str) -> tuple[int, int, str]:
+def export_audio(src: str, logical: str, paths: list[str], out: str, keep=None, old=None) -> tuple:
     """AudioClip -> mp3 (lameenc). Folder: Audio/<group> or Audio/NhanVat/<char>/audio."""
     import UnityPy
     import lameenc
@@ -491,6 +515,7 @@ def export_audio(src: str, logical: str, paths: list[str], out: str) -> tuple[in
     count = size = 0
     used: set = set()
     errs: list[str] = []
+    hashes: dict[str, str] = {}
     for obj in env.objects:
         if obj.type.name != "AudioClip":
             continue
@@ -502,6 +527,9 @@ def export_audio(src: str, logical: str, paths: list[str], out: str) -> tuple[in
                 with wave.open(io.BytesIO(wav)) as w:
                     ch, rate, width, pcm = w.getnchannels(), w.getframerate(), w.getsampwidth(), w.readframes(w.getnframes())
                 path = folder / f"{BAD.sub('_', Path(name).stem)}.mp3"
+                if not _want(path, Path(out), hashlib.md5(wav).hexdigest()[:16], by_pid.get(obj.path_id),
+                             keep, old, hashes):
+                    continue
                 if width == 2:
                     enc = lameenc.Encoder()
                     enc.set_bit_rate(160)
@@ -517,12 +545,47 @@ def export_audio(src: str, logical: str, paths: list[str], out: str) -> tuple[in
                 count += 1
         except Exception as e:
             errs.append(f"audio {obj.path_id}: {e}")
-    return count, size, "; ".join(errs)
+    return count, size, "; ".join(errs), hashes
 
 
-def run_export(ctx: Ctx, entries: list[dict], out: Path, audio: bool, workers: int) -> int:
-    """Pull bundles in batches, export in worker processes, delete each bundle after. Resumable."""
+def _hash_file(audio: bool) -> Path:
+    return SNAPS / ("_hash_audio.json" if audio else "_hash_anh.json")
+
+
+def load_hashes(audio: bool) -> dict:
+    """bundle FileMD5 -> {asset: content hash}; filled by every images/audio/update run."""
+    f = _hash_file(audio)
+    return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+
+
+def update_filters(old_index: dict, entries: list[dict], audio: bool) -> tuple[dict, list[str]]:
+    """Changed bundle -> (keep, old) for export_*: compare each asset with the old bundle's hashes when the
+    old bundle was exported before, else export only container paths that are new. Also returns the
+    changed bundles that can't be compared at all (no old hashes, no new path)."""
+    cache = load_hashes(audio)
+    oe = {x["Name"]: x for x in old_index["ABList"]}
+    filters, blind = {}, []
+    for x in entries:
+        o = oe.get(x["Name"])
+        if o is None:
+            continue  # new bundle: everything
+        hs = cache.get(o["FileMD5"].lower())
+        if hs is not None:
+            filters[x["Name"]] = (None, hs)
+        else:
+            keep = set(x["PathList"]) - set(o["PathList"])
+            filters[x["Name"]] = (keep, None)
+            if not keep:
+                blind.append(x["Name"])
+    return filters, blind
+
+
+def run_export(ctx: Ctx, entries: list[dict], out: Path, audio: bool, workers: int, filters=None) -> int:
+    """Pull bundles in batches, export in worker processes, delete each bundle after. Resumable.
+    filters: bundle name -> (keep, old), see update_filters."""
     out.mkdir(parents=True, exist_ok=True)
+    filters = filters or {}
+    cache = load_hashes(audio)
     prog = out / ("_xong_audio.txt" if audio else "_xong_anh.txt")
     done = set(prog.read_text(encoding="utf-8").split()) if prog.exists() else set()
     todo = [x for x in entries if x["FileMD5"].lower() not in done]
@@ -544,13 +607,15 @@ def run_export(ctx: Ctx, entries: list[dict], out: Path, audio: bool, workers: i
             for x in batch:
                 src = tmp / x["MD5Name"]
                 if src.is_file():
-                    futs[pool.submit(fn, str(src), x["Name"], x["PathList"], str(out))] = (x, src)
+                    futs[pool.submit(fn, str(src), x["Name"], x["PathList"], str(out),
+                                     *filters.get(x["Name"], (None, None)))] = (x, src)
                 else:
                     ef.write(f"THIẾU {x['MD5Name']} {x['Name']}\n")
             for f in as_completed(futs):
                 x, src = futs[f]
                 try:
-                    c, _s, err = f.result()
+                    c, _s, err, hs = f.result()
+                    cache[x["FileMD5"].lower()] = hs
                     total += c
                     if err:
                         ef.write(f"{x['Name']}: {err}\n")
@@ -560,6 +625,8 @@ def run_export(ctx: Ctx, entries: list[dict], out: Path, audio: bool, workers: i
                 src.unlink(missing_ok=True)
             pf.flush()
             ef.flush()
+            SNAPS.mkdir(exist_ok=True)
+            _hash_file(audio).write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
             say(f"[{min(i + BATCH, len(todo))}/{len(todo)}] {total} file {'audio' if audio else 'ảnh'}")
     return 0
 
@@ -748,16 +815,24 @@ def cmd_update(ctx: Ctx, args) -> int:
     changed_all = added + changed
     imgs = [x for x in changed_all if not x["Name"].startswith("audio_")]
     auds = [x for x in changed_all if any(p.endswith((".mp3", ".wav")) for p in x["PathList"])]
-    say(f"Xuất ảnh của {len(imgs)} bundle mới/sửa…")
-    run_export(ctx, imgs, out / "Anh", False, args.workers)
-    say(f"Xuất audio của {len(auds)} bundle…")
-    run_export(ctx, auds, out, True, args.workers)
+    fi, bi = update_filters(old.index, imgs, False)
+    fa, ba = update_filters(old.index, auds, True)
+    blind = sorted(set(bi) | set(ba))
+    with (out / "DanhSach_bundle.txt").open("a", encoding="utf-8") as f:
+        f.write(f"\n== ĐÃ SỬA NHƯNG KHÔNG SO ĐƯỢC TỪNG ẢNH/ÂM, KHÔNG XUẤT ({len(blind)}) ==\n"
+                "(bản cũ chưa từng chạy images/audio nên không biết ảnh nào đổi, và bundle không có đường dẫn mới)\n"
+                + "".join(n + "\n" for n in blind))
+    say(f"Xuất ảnh mới/đổi trong {len(imgs)} bundle…")
+    run_export(ctx, imgs, out / "Anh", False, args.workers, fi)
+    say(f"Xuất audio mới/đổi trong {len(auds)} bundle…")
+    run_export(ctx, auds, out, True, args.workers, fa)
     if vids:
         export_videos(ctx, vids, out / "Video")
 
     summary = [f"CẬP NHẬT {old_snap.name} → {ctx.snap.name}  ({datetime.now():%Y-%m-%d %H:%M})", "",
                f"Bundle: {len(added)} mới, {len(changed)} sửa (danh sách: DanhSach_bundle.txt)",
                f"Video mới/sửa: {len(vids)}",
+               f"Bundle sửa không so được từng ảnh/âm (không xuất): {len(blind)}",
                f"Text: {t_add} dòng mới, {t_mod} dòng sửa (Text_thaydoi.txt)",
                f"Lore: {l_add} file mới, {l_mod} file sửa (Lore_thaydoi/)", "",
                f"Nhân vật mới ({len(new_chars)}):"]

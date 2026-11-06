@@ -70,13 +70,15 @@ images và audio chạy tiếp được: đang chạy mà tắt thì chạy lạ
 
 3. LẤY BẢN CẬP NHẬT MỚI
 -----------------------
-  1. Ngay lần đầu, chạy một lệnh bất kỳ (ví dụ: python whmx.py sync) để tool lưu bản hiện tại.
+  1. Ngay lần đầu, chạy images và audio (hoặc all) để tool lưu bản hiện tại và nhớ từng ảnh/âm thanh.
+     Chỉ chạy sync thì update vẫn chạy được, nhưng với bundle đã sửa tool chỉ biết ảnh nào có
+     đường dẫn mới; ảnh bị vẽ lại mà giữ tên cũ sẽ không được xuất.
   2. Khi game ra update: mở game, đợi tải xong, TẮT game.
   3. Chạy:  python whmx.py update
 Thư mục CapNhat_<cũ>_den_<mới>\ gồm:
   TOM_TAT.txt            tóm tắt: số bundle mới/sửa, nhân vật mới, bảng dữ liệu nào đổi
   DanhSach_bundle.txt    tên các bundle mới / đã sửa / video mới
-  Anh\, Audio\, Video\   ảnh, audio, video của các bundle mới hoặc đã sửa
+  Anh\, Audio\, Video\   chỉ ảnh, audio, video MỚI hoặc ĐÃ ĐỔI (bundle đã sửa: ảnh không đổi bị bỏ qua)
   Text_thaydoi.txt       mọi dòng chữ mới hoặc đã sửa (tiểu sử, skin, vật phẩm, sự kiện...)
   MasterData_thaydoi\    mỗi bảng có thay đổi một file json:
                            "them" = dòng mới, "sua" = trường đã đổi [cũ, mới], "xoa" = dòng bị xoá
