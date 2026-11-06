@@ -44,8 +44,12 @@ MuMu phải đang mở. Game nên TẮT trong lúc chạy.
   audio      Toàn bộ âm thanh ra mp3.                 → Xuat\Audio\
                --only CHUOI       ví dụ --only audio_a0001
   video      37 video, đã sửa để mở được.             → Xuat\Video\
-  spine      Spine nhân vật (.skel, .atlas, .png).    → Xuat\Spine\
+  spine      Spine tranh lập thể (.skel, .atlas, .png). → Xuat\Spine\
                --only a0142       chỉ một nhân vật
+  chibi      Ghép chibi chiến đấu của mọi skin thành ảnh png nền trong suốt (khung đầu của động tác
+             đứng yên). Thú triệu hồi / thú cưng đi kèm skin được ghép thành ảnh riêng.
+                                                      → Xuat\Chibi\<nhân vật>\<skin>.png
+               --only s0130       chỉ một nhân vật (hoặc --only s0130003: một skin)
   lore       Toàn bộ chữ cốt truyện, phòng trà, thoại trong trận (tiếng Trung gốc).
                                                       → Xuat\Lore_<bản>\
   cg         Ảnh CG, xếp theo truyện dùng nó.         → Xuat\CG_TheoTruyen\
@@ -57,7 +61,7 @@ MuMu phải đang mở. Game nên TẮT trong lúc chạy.
   update     So bản game hiện tại với bản trước: chỉ xuất phần MỚI và phần ĐÃ SỬA.
                                                       → Xuat\CapNhat_<cũ>_den_<mới>\
                --tu r3164         so từ một bản cụ thể trong PhienBan\
-  all        Chạy lần lượt: images, audio, video, spine, lore, cg, dongcoc, hoanchuong.
+  all        Chạy lần lượt: images, audio, video, spine, chibi, lore, cg, dongcoc, hoanchuong.
 
 Tuỳ chọn chung (đặt TRƯỚC tên lệnh):
   --out "D:\ThuMuc"   thư mục xuất
@@ -81,6 +85,7 @@ Thư mục CapNhat_<cũ>_den_<mới>\ gồm:
   TOM_TAT.txt            tóm tắt: số bundle mới/sửa, nhân vật mới, bảng dữ liệu nào đổi
   DanhSach_bundle.txt    tên các bundle mới / đã sửa / video mới
   Anh\, Audio\, Video\   chỉ ảnh, audio, video MỚI hoặc ĐÃ ĐỔI (bundle đã sửa: ảnh không đổi bị bỏ qua)
+                         skin có chibi mới/sửa: thêm ảnh ghép Anh\NhanVat\<nhân vật>\<skin>_chibi.png
   Text_thaydoi.txt       mọi dòng chữ mới hoặc đã sửa (tiểu sử, skin, vật phẩm, sự kiện...)
   MasterData_thaydoi\    mỗi bảng có thay đổi một file json:
                            "them" = dòng mới, "sua" = trường đã đổi [cũ, mới], "xoa" = dòng bị xoá

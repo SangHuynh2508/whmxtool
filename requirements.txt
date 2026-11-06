@@ -3,3 +3,4 @@ lz4>=4.4
 pycryptodome>=3.23
 Pillow>=12
 lameenc>=1.9
+numpy>=1.26

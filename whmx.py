@@ -713,6 +713,60 @@ def export_spine(ctx: Ctx, only: str, out: Path) -> int:
     return 0
 
 
+CHIBI = re.compile(r"^character_[a-z]\d{7}\.ab$")  # battle chibi of one skin: character_s0130003.ab
+
+
+def chibi_bundles(ctx: Ctx, only: str = "") -> list[str]:
+    return sorted(n for n in ctx.ab if CHIBI.match(n) and only.lower() in n)
+
+
+def export_chibi(ctx: Ctx, names: list[str], out: Path, flat: bool = False) -> int:
+    """Battle chibi (spine) -> one PNG per skin, first frame of idle. out/<char>/<SKIN>_chibi.png
+    (flat=True: out/<char>/<SKIN>.png)."""
+    import whmx_chibi
+    from PIL import Image
+    say(f"{len(names)} chibi")
+    n = errs = 0
+    for i in range(0, len(names), BATCH):
+        ctx.prefetch(names[i:i + BATCH])
+        for b in names[i:i + BATCH]:
+            sid = b.removesuffix(".ab").split("_")[-1].upper()
+            vi = ctx.vi.get(sid[:5], "")
+            try:
+                skels, atlases, pages = {}, {}, {}
+                for o in ctx.env(b).objects:
+                    if o.type.name == "TextAsset":
+                        x = o.read()
+                        data = x.m_Script.encode("utf-8", "surrogateescape") if isinstance(x.m_Script, str) else bytes(x.m_Script)
+                        if x.m_Name.endswith(".skel"):
+                            skels[x.m_Name.removesuffix(".skel")] = data
+                        elif ".atlas" in x.m_Name:
+                            atlases[x.m_Name.split(".atlas")[0]] = data.decode("utf-8", "replace")
+                    elif o.type.name == "Texture2D":
+                        x = o.read()
+                        pages[x.m_Name + ".png"] = x.image
+            except Exception as e:
+                errs += 1
+                say(f"LỖI chibi {b}: {e}")
+                skels = {}
+            d = out / BAD.sub("", f"{sid[:5]}_{vi}" if vi else sid[:5])
+            for stem, skel in sorted(skels.items()):  # the skin itself + summons/pets (A0084001_shizi, ..._cat01)
+                if stem not in atlases:
+                    continue
+                main = stem.upper() == sid
+                try:
+                    img = whmx_chibi.render(skel, atlases[stem], pages)
+                    d.mkdir(parents=True, exist_ok=True)
+                    img.save(d / (f"{sid}.png" if flat and main else f"{sid if main else stem}{'' if flat else '_chibi'}.png"))
+                    n += 1
+                except Exception as e:
+                    errs += 1
+                    say(f"LỖI chibi {b} {stem}: {e}")
+            (TMP / "b" / ctx.ab[b]["MD5Name"]).unlink(missing_ok=True)
+        say(f"[{min(i + BATCH, len(names))}/{len(names)}] {n} ảnh chibi")
+    return 1 if errs else 0
+
+
 # ---------------------------------------------------------------- update (diff two versions)
 
 def _keyed(d) -> dict:
@@ -832,6 +886,9 @@ def cmd_update(ctx: Ctx, args) -> int:
     run_export(ctx, auds, out, True, args.workers, fa)
     if vids:
         export_videos(ctx, vids, out / "Video")
+    chibis = [x["Name"] for x in changed_all if CHIBI.match(x["Name"])]
+    if chibis:
+        export_chibi(ctx, chibis, out / "Anh" / "NhanVat")
 
     summary = [f"CẬP NHẬT {old_snap.name} → {ctx.snap.name}  ({datetime.now():%Y-%m-%d %H:%M})", "",
                f"Bundle: {len(added)} mới, {len(changed)} sửa (danh sách: DanhSach_bundle.txt)",
@@ -839,7 +896,8 @@ def cmd_update(ctx: Ctx, args) -> int:
                f"Bundle sửa không so được từng ảnh/âm (không xuất): {len(blind)}",
                f"Text: {t_add} dòng mới, {t_mod} dòng sửa (Text_thaydoi.txt)",
                f"Lore: {l_add} file mới, {l_mod} file sửa (Lore_thaydoi/)",
-               f"Hoán chương mới/sửa: {len(hz)} (HoanChuong_thaydoi/)", "",
+               f"Hoán chương mới/sửa: {len(hz)} (HoanChuong_thaydoi/)",
+               f"Chibi mới/sửa: {len(chibis)} (Anh/NhanVat/<nhân vật>/<skin>_chibi.png)", "",
                f"Nhân vật mới ({len(new_chars)}):"]
     summary += [f"  {r.get('id')} {r.get('namelanText') or r.get('name') or ''}" for r in new_chars]
     summary += ["", f"MasterData đổi ({len(md_sum)} bảng, chi tiết MasterData_thaydoi/<bảng>.json):", *md_sum]
@@ -909,9 +967,11 @@ def main() -> int:
     sub.add_parser("cg", help="ảnh CG theo từng truyện")
     sub.add_parser("dongcoc", help="冬谷归档: tạp chí, hồ sơ, hồi tưởng, ngoại cần, ảnh kỷ niệm (html + ảnh)")
     sub.add_parser("hoanchuong", help="焕彰: truyện, hiệu ứng, chỉ số, nguyên liệu của mọi hoán chương (txt)")
+    p = sub.add_parser("chibi", help="ghép chibi chiến đấu của mọi skin ra ảnh png nền trong suốt")
+    p.add_argument("--only", default="", help="vd s0130 (một nhân vật) hoặc s0130003 (một skin)")
     p = sub.add_parser("update", help="so bản hiện tại với bản trước: ảnh/audio/video/text/lore mới")
     p.add_argument("--tu", default="", help="so từ bản này (tên thư mục trong PhienBan/), mặc định bản trước đó")
-    sub.add_parser("all", help="images + audio + video + spine + lore + cg + dongcoc + hoanchuong")
+    sub.add_parser("all", help="images + audio + video + spine + chibi + lore + cg + dongcoc + hoanchuong")
     args = ap.parse_args()
 
     if args.cmd == "doctor":
@@ -921,7 +981,7 @@ def main() -> int:
     ctx = Ctx(dev, snapshot(dev))
     out = Path(args.out)
     say(f"Bản game: {ctx.snap.name}  ({dev.pkg} trên {dev.serial})")
-    cmds = ["images", "audio", "video", "spine", "lore", "cg", "dongcoc", "hoanchuong"] if args.cmd == "all" else [args.cmd]
+    cmds = ["images", "audio", "video", "spine", "chibi", "lore", "cg", "dongcoc", "hoanchuong"] if args.cmd == "all" else [args.cmd]
     rc = 0
     try:
         for c in cmds:
@@ -935,6 +995,8 @@ def main() -> int:
                 rc |= export_videos(ctx, ctx.index["VideoList"], out / "Video")
             elif c == "spine":
                 rc |= export_spine(ctx, getattr(args, "only", ""), out / "Spine")
+            elif c == "chibi":
+                rc |= export_chibi(ctx, chibi_bundles(ctx, getattr(args, "only", "")), out / "Chibi", flat=True)
             elif c == "lore":
                 story.build_lore(ctx, out / f"Lore_{ctx.snap.name}")
             elif c == "cg":
