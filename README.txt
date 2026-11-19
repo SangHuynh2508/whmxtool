@@ -125,6 +125,9 @@ Mỗi bản tốn khoảng 170 MB trong PhienBan\. Đừng xoá thư mục này.
 
 4. ĐỊNH DẠNG LORE (Xuat\Lore_<bản>\)
 -----------------------------------
+  Bản đơn giản: lore_don_gian.py chỉ cần file novel.ab, không cần MuMu/MasterData
+  (python lore_don_gian.py novel.ab ThuMucXuat). Không có tên chương/sự kiện, phòng trà, thoại trận.
+
   Main_Story\m001..     cốt truyện chính, mỗi chương một khu vực
   Events\e001..         cốt truyện sự kiện
   Side_Stories_B\       truyện nhánh
