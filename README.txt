@@ -43,6 +43,29 @@ MuMu phải đang mở. Game nên TẮT trong lúc chạy.
                                   --only character_drawing  (tranh lập thể)
   audio      Toàn bộ âm thanh ra mp3.                 → Xuat\Audio\
                --only CHUOI       ví dụ --only audio_a0001
+  lua        ~2350 file mã Lua client (giao diện, sự kiện, trận đấu),
+             đã giải mã, đọc được như code thường. → Xuat\Lua_<bản>\
+  bgm        259 bài nhạc nền + ảnh bìa đĩa + bgm_index.json.
+                                                      → Xuat\Audio\bgm\
+             bgm_index.json: mỗi bài một mục
+               file       tên file mp3 trong thư mục này
+               jukebox    tên chính thức trong máy hát căn cứ (38 bài), ảnh bìa (bia\...png),
+                          nguồn lấy bài, mã vật phẩm mở khoá
+               stories    mã kịch bản phát bài này (khớp tên file trong Lore_<bản>, vd e022002)
+               stages     màn đánh dùng bài này (mã + tên màn)
+               areas      khu vực bản đồ dùng bài này
+             Bài không có trong bảng nào (khoảng 46 bài) chỉ có tên file.
+  voice      Thoại nhân vật (44 loại: chiêu mộ, chào hỏi, trò chuyện, trận đấu, sinh nhật...) và lồng tiếng
+             trong truyện, ra mp3 kèm chữ.            → Xuat\Audio\NhanVat\..., Xuat\Audio\novelvoice\
+             Thêm 2 file trong Xuat\Audio\:
+               voice_nhanvat.json  mỗi nhân vật một mục: tên Trung/Việt, các bản ngôn ngữ (langs: mã gói
+                                   1001 = 中文-普通话, 1002 = 英文, 1007 = 古埃及语..., tên gói, CV), mỗi câu có
+                                   skin, loại thoại (type + label tiếng Trung), chữ (text), file mp3
+                                   (cv riêng nếu skin đó có CV khác)
+               voice_truyen.json   mỗi kịch bản một mục (vd m007016): node, người nói (speaker_cn, char),
+                                   chữ, file mp3
+             file = null: câu có trong dữ liệu nhưng chưa xuất được file. text rỗng: game không có chữ cho câu đó.
+               --only CHUOI       ví dụ --only character_a0024 (một nhân vật) hoặc --only audio_m007 (truyện chính khu 7)
   video      37 video, đã sửa để mở được.             → Xuat\Video\
   spine      Spine tranh lập thể (.skel, .atlas, .png). → Xuat\Spine\
                --only a0142       chỉ một nhân vật
@@ -53,6 +76,11 @@ MuMu phải đang mở. Game nên TẮT trong lúc chạy.
   lore       Toàn bộ chữ cốt truyện, phòng trà, thoại trong trận (tiếng Trung gốc).
                                                       → Xuat\Lore_<bản>\
   cg         Ảnh CG, xếp theo truyện dùng nó.         → Xuat\CG_TheoTruyen\
+  gallery    Ảnh cho Thư viện ảnh của web, chia theo bảng game dùng ảnh:
+             loading (CG màn hình chờ), home (nền sảnh), postcard (bưu thiếp),
+             kv (ảnh chủ đề phiên bản), story (CG truyện) + INDEX.json + _THIEU.txt.
+                                                      → Xuat\Gallery_<bản>\
+               --dry-run          chỉ liệt kê, không rút ảnh (vẫn cần MuMu để đọc index)
   dongcoc    冬谷归档: tạp chí, hồ sơ, hồi tưởng sự kiện, ngoại cần kiến văn, ảnh kỷ niệm.
              Một file html mở bằng trình duyệt (có sẵn ảnh) + thư mục images\ + raw\.
                                                       → Xuat\DongCoc_QuyDang\
@@ -61,7 +89,7 @@ MuMu phải đang mở. Game nên TẮT trong lúc chạy.
   update     So bản game hiện tại với bản trước: chỉ xuất phần MỚI và phần ĐÃ SỬA.
                                                       → Xuat\CapNhat_<cũ>_den_<mới>\
                --tu r3164         so từ một bản cụ thể trong PhienBan\
-  all        Chạy lần lượt: images, audio, video, spine, chibi, lore, cg, dongcoc, hoanchuong.
+  all        Chạy lần lượt: images, audio, bgm, video, spine, chibi, lore, cg, dongcoc, hoanchuong.
 
 Tuỳ chọn chung (đặt TRƯỚC tên lệnh):
   --out "D:\ThuMuc"   thư mục xuất

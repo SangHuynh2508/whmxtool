@@ -114,6 +114,62 @@ def _read_names(raw):
     return out
 
 
+def load_novel(env):
+    """novel.ab -> (script -> text rows, script -> nodes, raw NovelNameText)."""
+    lan, node, name_raw = {}, {}, None
+    for o in env.objects:
+        if o.type.name != 'MonoBehaviour':
+            continue
+        x = o.read(check_read=False)
+        sc = x.m_Script.read().m_Name
+        if sc == 'NovelLanAsset':
+            lan[x.m_Name] = parse_mono(o.get_raw_data())['LansList']['_0']
+        elif sc == 'NovelNodeAsset':
+            node[x.m_Name] = parse_mono(o.get_raw_data())['NodesList']['_0']
+        elif x.m_Name == 'NovelNameText':
+            name_raw = o.get_raw_data()
+    return lan, node, name_raw
+
+
+# ---------------------------------------------------------------- bgm
+
+def bgm_index(ctx, files: list[str]) -> list[dict]:
+    """One entry per exported BGM file (e.g. 'novel_C41.mp3'): jukebox name/cover/source (FoundationMusicMap),
+    stories that play it (novel.ab BGMInfo), battle stages (dungeonMap.music), map areas (areas.areaBGM).
+    Game data matches file names case-insensitively."""
+    use = collections.defaultdict(lambda: {'stories': set(), 'stages': [], 'areas': []})
+    _, node, _ = load_novel(ctx.env('novel.ab'))
+    for sid, nodes in node.items():
+        for n in filter(None, nodes):
+            b = ((n.get('AudioData') or {}).get('BGMInfo') or {}).get('BGMName')
+            if b:
+                use[b.lower()]['stories'].add(sid.lower())
+    for r in ctx.rows('dungeonMap'):
+        if r.get('music'):
+            use[r['music'].lower()]['stages'].append({'id': r['id'], 'name': r.get('NameLanText') or r.get('name') or ''})
+    for r in ctx.rows('areas'):
+        if r.get('areaBGM'):
+            use[r['areaBGM'].lower()]['areas'].append({'id': r['area'], 'name': r.get('mapTitlelanText') or r.get('mapDes') or ''})
+    jukebox = collections.defaultdict(list)
+    for r in ctx.rows('FoundationMusicMap'):
+        if r.get('NameLanText') and r['NameLanText'] != '预留位置':  # placeholder slot reusing foundationMusic_1
+            jukebox[r['Resources'].lower()].append(r)
+    out = []
+    for f in sorted(files, key=str.lower):
+        k = Path(f).stem.lower()
+        u = use.get(k, {'stories': set(), 'stages': [], 'areas': []})
+        out.append({
+            'file': f,
+            'jukebox': [{'id': j['Id'], 'name': j['NameLanText'], 'cover': f"bia/{j['Icon']}.png",
+                         'source': j.get('SourceTipLanText') or '', 'unlock_item': j.get('Unlock') or '',
+                         'default': bool(j.get('Default'))} for j in jukebox.get(k, [])],
+            'stories': sorted(u['stories']),
+            'stages': u['stages'],
+            'areas': u['areas'],
+        })
+    return out
+
+
 # ---------------------------------------------------------------- lore
 
 def build_lore(ctx, out: Path) -> None:
@@ -134,18 +190,7 @@ def build_lore(ctx, out: Path) -> None:
         parts = p.split('/')
         if len(parts) > 5 and parts[3] == 'config' and parts[4] in ('novel', 'lan'):
             paths[(parts[4], Path(p).stem.lower())] = parts[5] if len(parts) > 6 else ''
-    lan, node, name_raw = {}, {}, None
-    for o in env.objects:
-        if o.type.name != 'MonoBehaviour':
-            continue
-        x = o.read(check_read=False)
-        sc = x.m_Script.read().m_Name
-        if sc == 'NovelLanAsset':
-            lan[x.m_Name] = parse_mono(o.get_raw_data())['LansList']['_0']
-        elif sc == 'NovelNodeAsset':
-            node[x.m_Name] = parse_mono(o.get_raw_data())['NodesList']['_0']
-        elif x.m_Name == 'NovelNameText':
-            name_raw = o.get_raw_data()
+    lan, node, name_raw = load_novel(env)
     SPK = _read_names(name_raw)
 
     def speaker(sp):
@@ -392,8 +437,8 @@ SECTION_VI = {'Main_Story': '1_Cot_truyen_chinh', 'Events': '2_Event', 'Side_Sto
               'LAN_Only': '7_Khac'}
 
 
-def build_cg(ctx, lore: Path, out: Path) -> None:
-    """Each CG (〔背景 cg…〕 in the lore) goes to the folder of the first script that shows it; INDEX.tsv lists every user."""
+def cg_first_use(lore: Path) -> tuple[dict, dict]:
+    """CG name → first INDEX.tsv row that shows it (ORDER, then file), and name → every 'id title' using it."""
     rows = list(csv.DictReader(open(lore / 'INDEX.tsv', encoding='utf-8-sig'), delimiter='\t'))
     rows.sort(key=lambda r: (ORDER.index(r['SECTION']) if r['SECTION'] in ORDER else 99, nat(r['FILE'])))
     first, uses = {}, {}
@@ -408,21 +453,27 @@ def build_cg(ctx, lore: Path, out: Path) -> None:
             if tag not in uses.setdefault(name, []):
                 uses[name].append(tag)
             first.setdefault(name, r)
+    return first, uses
 
-    def variants(name):
-        n = name.lower().replace('.', '_')  # scripts write cg_1_3.1 for bundle cg_1_3_1
-        if n.endswith('sex'):
-            return [(n + 'f', '_nu'), (n + 'm', '_nam')]  # Nhà Sưu Tầm nữ / nam
-        return [(n, '')]
 
-    wanted = [f'images_novel_background_{low}.ab' for name in first for low, _ in variants(name)]
+def cg_variants(name: str) -> list[tuple[str, str]]:
+    n = name.lower().replace('.', '_')  # scripts write cg_1_3.1 for bundle cg_1_3_1
+    if n.endswith('sex'):
+        return [(n + 'f', '_nu'), (n + 'm', '_nam')]  # Nhà Sưu Tầm nữ / nam
+    return [(n, '')]
+
+
+def build_cg(ctx, lore: Path, out: Path) -> None:
+    """Each CG (〔背景 cg…〕 in the lore) goes to the folder of the first script that shows it; INDEX.tsv lists every user."""
+    first, uses = cg_first_use(lore)
+    wanted = [f'images_novel_background_{low}.ab' for name in first for low, _ in cg_variants(name)]
     for i in range(0, len(wanted), 40):
         ctx.prefetch(wanted[i:i + 40])
     counter, index, missing = {}, [], []
     for name, r in first.items():
         folder = out / SECTION_VI.get(r['SECTION'], r['SECTION']) / safe(f"{r['CATEGORY']} {r['GROUP_NAME_CN']}")
         counter[folder] = counter.get(folder, 0) + 1
-        for low, suffix in variants(name):
+        for low, suffix in cg_variants(name):
             logical = f'images_novel_background_{low}.ab'
             if logical not in ctx.ab:
                 missing.append(f'{name}\t{logical}\tkhông có trong index game'); continue
@@ -668,3 +719,88 @@ def build_hoanchuong(ctx, out: Path, keys=None) -> int:
         n += 1
     print(f"Hoán chương: {n} file → {out}", flush=True)
     return n
+
+
+# ---------------------------------------------------------------- voice lines
+
+VOICE_RE = re.compile(r'/character/([a-z]\d{4})/audio(?:_(\d+))?/character_(.+)_([a-z]\d{7})\.mp3$')
+
+
+def line_extra(unlock: str, cl_row: dict | None, key: str) -> dict:
+    """The line type's unlock text (CN, linesUnlock.unLockTextlanText) and, for timeLine_1 / timeLine_2, this skin's
+    time window as the game stores it ("6,0,18,0" = 6:00-18:00, characterLines.TimeLine_<n>_zone)."""
+    out = {}
+    if unlock:
+        out['unlock'] = unlock
+    m = re.fullmatch(r'timeLine_(\d)', key)
+    zone = (cl_row or {}).get(f'TimeLine_{m[1]}_zone') if m else None
+    if zone:
+        out['zone'] = zone
+    return out
+
+
+def voice_index(ctx, rel) -> tuple[dict, dict]:
+    """Every voice file with its text. rel(container path) -> exported file path (str) or None.
+    Character lines: character/<cid>/audio[_<lang>]/character_<type>_<skin>.mp3; the plain 'audio' folder is the
+    character's first RESLinesMap.Linestype (1001 = 中文-普通话 when absent); text from CharacterLinesLanMap
+    '<skin>_<lang>' for a language with its own folder, else characterLines[<skin>]['<type>LanText'].
+    Story: audio/novelvoice/<script>_<NodeId>.mp3 -> that node's DialogData (speaker + Content key in NovelLanAsset)."""
+    rows, VI = ctx.rows, ctx.vi
+    types = {r['linesType'].lower(): (r['linesType'], r['num'], r.get('typeNamelanText', '')) for r in rows('linesUnlock')}
+    unlock = {r['linesType']: r.get('unLockTextlanText') or '' for r in rows('linesUnlock')}
+    CL, LM = ctx.table('characterLines'), ctx.table('CharacterLinesLanMap')
+    RES = ctx.table('RESLinesMap')
+    LANG = {str(r['Id']): r.get('RESNameLanText', '') for r in rows('RESDownloadMap')}
+    CN = {}
+    for r in rows('characterTable'):
+        CN.setdefault(r['id'], r.get('namelanText') or r.get('name') or '')
+
+    chars: dict = {}
+    story_files: dict = {}
+    for x in ctx.index['ABList']:
+        for p in x['PathList']:
+            if '/audio/novelvoice/' in p:
+                story_files[Path(p).stem.lower()] = p
+                continue
+            m = VOICE_RE.search(p.lower())
+            if not m:
+                continue
+            cid, alt, typ, skin = m[1].upper(), m[2], m[3], m[4].upper()
+            res = RES.get(cid) or {}
+            order = res.get('Linestype') or ['1001']
+            lang = alt or order[0]
+            cvs = (res.get('CvLanText') or res.get('Cv') or '').split(';')
+            cv = cvs[order.index(lang)] if lang in order and order.index(lang) < len(cvs) else ''
+            key, num, label = types.get(typ, (typ, 999, ''))
+            text = (LM.get(f'{skin}_{alt}') or {}).get(key) if alt else None
+            if text is None:
+                text = (CL.get(skin) or {}).get(f'{key}LanText')
+            c = chars.setdefault(cid, {'id': cid, 'name_cn': CN.get(cid, res.get('Name', '')), 'name_vi': VI.get(cid, ''),
+                                       'langs': {}})
+            L = c['langs'].setdefault(lang, {'lang': lang, 'name': LANG.get(lang, ''), 'cv': cv, 'lines': []})
+            line = {'skin': skin, 'type': key, 'order': num, 'label': label, 'text': text or '', 'file': rel(p),
+                    **line_extra(unlock.get(key, ''), CL.get(skin), key)}
+            if res.get('SkinCV') and res.get('SkinID', '').upper() == skin:
+                line['cv'] = res['SkinCV']  # this skin has its own voice actor
+            L['lines'].append(line)
+    for c in chars.values():
+        for L in c['langs'].values():
+            L['lines'].sort(key=lambda l: (l['skin'], l['order']))
+        c['langs'] = sorted(c['langs'].values(), key=lambda L: (L['lang'] != (RES.get(c['id']) or {}).get('Linestype', ['1001'])[0], L['lang']))
+
+    lan, node, name_raw = load_novel(ctx.env('novel.ab'))
+    SPK = _read_names(name_raw)
+    by_low = {k.lower(): k for k in node}
+    story: dict = {}
+    for stem, p in sorted(story_files.items(), key=lambda kv: nat(kv[0])):
+        sc, _, nid = stem.rpartition('_')
+        sid = by_low.get(sc)
+        n = next((n for n in (node.get(sid) or []) if n and str(n.get('NodeId', '')).lower() == nid), None)
+        d = (n or {}).get('DialogData') or {}
+        texts = {r['Key']: r for r in (lan.get(sid) or []) if r}
+        sp = d.get('Speaker') or ''
+        nm, cid = SPK.get(sp, ('', ''))
+        story.setdefault(sc, []).append({'node': n['NodeId'] if n else nid.upper(), 'speaker': sp, 'speaker_cn': nm,
+                                         'char': cid, 'text': (texts.get(d.get('Content')) or {}).get('CN') or '',
+                                         'file': rel(p)})
+    return chars, story

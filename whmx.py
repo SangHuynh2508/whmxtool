@@ -290,7 +290,7 @@ def snapshot(dev: Device) -> Path:
     for p in snapshots():
         if json.loads((p / "info.json").read_text(encoding="utf-8"))["md5"] == md5:
             shutil.rmtree(new)
-            return p
+            return ensure_lua(dev, p)
     name, i = idx["Version"], 1
     while (SNAPS / name / "info.json").exists():
         i += 1
@@ -313,7 +313,23 @@ def snapshot(dev: Device) -> Path:
             "tables": len(tables), "texts": len(lang), "md5": md5}
     (dst / "info.json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
     say(f"Đã lưu {dst}  ({len(idx['ABList'])} bundle, {len(tables)} bảng, {len(lang)} dòng text)")
-    return dst
+    return ensure_lua(dev, dst)
+
+
+def ensure_lua(dev: Device, snap: Path) -> Path:
+    """Lưu mã Lua đã giải mã vào snapshot/lua (bản cũ chưa có thì bổ sung, nếu máy còn đúng bản đó)."""
+    if (snap / "lua").is_dir():
+        return snap
+    tmp = snap / "lua.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        export_lua(Ctx(dev, snap), tmp)  # bundle() tự kiểm md5 với index của snapshot
+    except RuntimeError as e:
+        say(f"Không lưu được Lua cho {snap.name}: {e}")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return snap
+    tmp.rename(snap / "lua")
+    return snap
 
 
 class Ctx:
@@ -640,7 +656,81 @@ def audio_entries(ctx: Ctx, only: str = "") -> list[dict]:
             if any(p.endswith((".mp3", ".wav")) for p in x["PathList"]) and only in x["Name"]]
 
 
+def export_bgm(ctx: Ctx, out: Path, workers: int) -> int:
+    """BGM mp3 -> out/Audio/bgm, jukebox covers -> out/Audio/bgm/bia, plus bgm_index.json (see whmx_story.bgm_index)."""
+    import whmx_story
+    rc = run_export(ctx, [x for x in ctx.index["ABList"] if x["Name"].startswith("audio_bgm_")], out, True, workers)
+    folder = out / "Audio" / "bgm"
+    (folder / "bia").mkdir(parents=True, exist_ok=True)
+    for o in ctx.env("images_bgmicons.ab").objects:
+        if o.type.name == "Texture2D":
+            t = o.read()
+            t.image.save(folder / "bia" / f"{BAD.sub('_', t.m_Name)}.png")
+    files = [p.name for p in folder.iterdir() if p.suffix in (".mp3", ".wav")]
+    idx = whmx_story.bgm_index(ctx, files)
+    (folder / "bgm_index.json").write_text(json.dumps(
+        {"version": ctx.snap.name, "tracks": idx}, ensure_ascii=False, indent=1), encoding="utf-8")
+    named = sum(1 for x in idx if x["jukebox"])
+    used = sum(1 for x in idx if x["jukebox"] or x["stories"] or x["stages"] or x["areas"])
+    say(f"BGM: {len(idx)} bài, {named} có tên chính thức, {used} biết chỗ dùng → {folder / 'bgm_index.json'}")
+    return rc
+
+
+def export_voice(ctx: Ctx, out: Path, workers: int, only: str = "") -> int:
+    """Character voice lines + story voice -> out/Audio (same layout as `audio`), plus voice_nhanvat.json and
+    voice_truyen.json in out/Audio: every voice file with its text (see whmx_story.voice_index)."""
+    import whmx_story
+    voice = re.compile(r"/character/[a-z]\d{4}/audio[^/]*/character_.+\.mp3$|/audio/novelvoice/")
+    entries = [x for x in ctx.index["ABList"]
+               if only in x["Name"] and any(voice.search(p.lower()) for p in x["PathList"])]
+    rc = run_export(ctx, entries, out, True, workers)
+    _init_worker(ctx.vi)
+    root = out / "Audio"
+    done = {p for x in entries for p in x["PathList"]}
+
+    def rel(p: str):
+        """Where export_audio put this container path (relative to out/Audio), None when not exported."""
+        d = map_dir(p)
+        f = out / (d if d.parts[0] == "Audio" else Path("Audio", d)) / f"{Path(p).stem}.mp3"
+        return f.relative_to(root).as_posix() if p in done and f.is_file() else None
+
+    chars, story = whmx_story.voice_index(ctx, rel)
+    if only:  # ponytail: --only keeps just what this run exported, so the json matches the files
+        chars = {k: v for k, v in chars.items() if any(l["file"] for L in v["langs"] for l in L["lines"])}
+        story = {k: v for k, v in story.items() if any(l["file"] for l in v)}
+    for name, data in (("voice_nhanvat.json", chars), ("voice_truyen.json", story)):
+        (root / name).write_text(json.dumps({"version": ctx.snap.name, "items": data}, ensure_ascii=False, indent=1),
+                                 encoding="utf-8")
+    lines = [l for c in chars.values() for L in c["langs"] for l in L["lines"]]
+    sl = [l for v in story.values() for l in v]
+    say(f"Voice nhân vật: {len(chars)} nhân vật, {len(lines)} câu, {sum(1 for l in lines if l['file'])} có file, "
+        f"{sum(1 for l in lines if not l['text'])} thiếu chữ")
+    say(f"Voice truyện: {len(story)} truyện, {len(sl)} câu, {sum(1 for l in sl if l['file'])} có file, "
+        f"{sum(1 for l in sl if not l['text'])} thiếu chữ → {root}")
+    return rc
+
+
 # ---------------------------------------------------------------- video / spine
+
+def lua_sources(ctx: Ctx) -> dict[str, str]:
+    """lua.ab: TextAsset .lua, AES-ECB bằng AES_KEY → mã Lua dạng chữ."""
+    res = {}
+    for obj in ctx.env("lua.ab").objects:
+        if obj.type.name == "TextAsset":
+            t = obj.read()
+            b = t.m_Script.encode("utf-8", "surrogateescape") if isinstance(t.m_Script, str) else t.m_Script
+            res[t.m_Name] = aes_dec(b).decode("utf-8", "replace")
+    return res
+
+
+def export_lua(ctx: Ctx, folder: Path) -> int:
+    src = lua_sources(ctx)
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, code in src.items():
+        (folder / name).write_text(code, encoding="utf-8")
+    say(f"Lua: {len(src)} file → {folder}")
+    return 0
+
 
 def video_names(ctx: Ctx) -> dict[str, str]:
     """Video .ab names are md5(stem); recover stems by hashing words from MasterData + lua."""
@@ -648,10 +738,8 @@ def video_names(ctx: Ctx) -> dict[str, str]:
     words: set[str] = set()
     for p in (ctx.snap / "masterdata").glob("*.json"):
         words |= set(word.findall(p.read_text(encoding="utf-8")))
-    for obj in ctx.env("lua.ab").objects:
-        if obj.type.name == "TextAsset":
-            s = obj.read().m_Script
-            words |= set(word.findall(s if isinstance(s, str) else s.decode("utf-8", "ignore")))
+    for src in lua_sources(ctx).values():
+        words |= set(word.findall(src))
     return {hashlib.md5(w.encode()).hexdigest() + ".ab": w for w in words}
 
 
@@ -807,13 +895,19 @@ def diff_text(old: Ctx, new: Ctx, out: Path) -> tuple[int, int]:
     return len(add), len(mod)
 
 
-def diff_dirs(old_dir: Path, new_dir: Path, out: Path) -> tuple[int, int]:
+def _no_source(p: Path) -> list[bytes]:
+    # dòng SOURCE ghi tên bản (r3171…) nên luôn khác; bỏ khi so
+    return [l for l in p.read_bytes().splitlines() if not l.startswith(b"SOURCE:")]
+
+
+def diff_dirs(old_dir: Path, new_dir: Path, out: Path, pattern: str = "*.txt") -> tuple[int, int]:
     """Copy files of new_dir that are new or differ from old_dir."""
+    shutil.rmtree(out, ignore_errors=True)  # bỏ kết quả của lần chạy trước
     added = changed = 0
-    for f in new_dir.rglob("*.txt"):
+    for f in new_dir.rglob(pattern):
         rel = f.relative_to(new_dir)
         o = old_dir / rel
-        if o.exists() and o.read_bytes() == f.read_bytes():
+        if o.exists() and _no_source(o) == _no_source(f):
             continue
         (out / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, out / rel)
@@ -863,6 +957,11 @@ def cmd_update(ctx: Ctx, args) -> int:
     story.build_lore(old, lo)
     story.build_lore(ctx, ln)
     l_add, l_mod = diff_dirs(lo, ln, out / "Lore_thaydoi")
+    if (old_snap / "lua").is_dir() and (ctx.snap / "lua").is_dir():
+        lua_add, lua_mod = diff_dirs(old_snap / "lua", ctx.snap / "lua", out / "Lua_thaydoi", "*.lua")
+        lua_line = f"Lua: {lua_add} file mới, {lua_mod} file sửa (Lua_thaydoi/)"
+    else:
+        lua_line = f"Lua: không so được ({old_snap.name} chưa lưu Lua; từ bản sau sẽ có)"
     shutil.rmtree(lo, ignore_errors=True)
     shutil.rmtree(ln, ignore_errors=True)
     og = story.huanzhang_groups(old)
@@ -896,6 +995,7 @@ def cmd_update(ctx: Ctx, args) -> int:
                f"Bundle sửa không so được từng ảnh/âm (không xuất): {len(blind)}",
                f"Text: {t_add} dòng mới, {t_mod} dòng sửa (Text_thaydoi.txt)",
                f"Lore: {l_add} file mới, {l_mod} file sửa (Lore_thaydoi/)",
+               lua_line,
                f"Hoán chương mới/sửa: {len(hz)} (HoanChuong_thaydoi/)",
                f"Chibi mới/sửa: {len(chibis)} (Anh/NhanVat/<nhân vật>/<skin>_chibi.png)", "",
                f"Nhân vật mới ({len(new_chars)}):"]
@@ -960,18 +1060,24 @@ def main() -> int:
     p.add_argument("--nhanvat", action="store_true", help="chỉ ảnh nhân vật (character_*)")
     p = sub.add_parser("audio", help="xuất toàn bộ audio ra mp3")
     p.add_argument("--only", default="")
+    sub.add_parser("lua", help="mã Lua giao diện/logic client (đã giải mã) ra Xuat/Lua_<bản>")
+    sub.add_parser("bgm", help="nhạc nền mp3 + ảnh bìa + bgm_index.json (tên bài, truyện/màn/khu vực dùng)")
+    p = sub.add_parser("voice", help="thoại nhân vật + lồng tiếng truyện (mp3) kèm chữ: voice_nhanvat.json, voice_truyen.json")
+    p.add_argument("--only", default="", help="chỉ bundle có tên chứa chuỗi này, vd character_a0001 hoặc audio_m007")
     sub.add_parser("video", help="xuất video mp4 (đã sửa)")
     p = sub.add_parser("spine", help="xuất spine nhân vật (skel/atlas/png)")
     p.add_argument("--only", default="", help="vd a0142")
     sub.add_parser("lore", help="toàn bộ cốt truyện, phòng trà, thoại trận (txt)")
     sub.add_parser("cg", help="ảnh CG theo từng truyện")
+    p = sub.add_parser("gallery", help="ảnh cho Thư viện ảnh của web: CG loading, nền sảnh, bưu thiếp, KV, CG truyện + INDEX.json")
+    p.add_argument("--dry-run", action="store_true", help="chỉ liệt kê mục và bundle, không rút ảnh")
     sub.add_parser("dongcoc", help="冬谷归档: tạp chí, hồ sơ, hồi tưởng, ngoại cần, ảnh kỷ niệm (html + ảnh)")
     sub.add_parser("hoanchuong", help="焕彰: truyện, hiệu ứng, chỉ số, nguyên liệu của mọi hoán chương (txt)")
     p = sub.add_parser("chibi", help="ghép chibi chiến đấu của mọi skin ra ảnh png nền trong suốt")
     p.add_argument("--only", default="", help="vd s0130 (một nhân vật) hoặc s0130003 (một skin)")
     p = sub.add_parser("update", help="so bản hiện tại với bản trước: ảnh/audio/video/text/lore mới")
     p.add_argument("--tu", default="", help="so từ bản này (tên thư mục trong PhienBan/), mặc định bản trước đó")
-    sub.add_parser("all", help="images + audio + video + spine + chibi + lore + cg + dongcoc + hoanchuong")
+    sub.add_parser("all", help="images + audio + bgm + video + spine + chibi + lore + cg + dongcoc + hoanchuong")
     args = ap.parse_args()
 
     if args.cmd == "doctor":
@@ -981,7 +1087,7 @@ def main() -> int:
     ctx = Ctx(dev, snapshot(dev))
     out = Path(args.out)
     say(f"Bản game: {ctx.snap.name}  ({dev.pkg} trên {dev.serial})")
-    cmds = ["images", "audio", "video", "spine", "chibi", "lore", "cg", "dongcoc", "hoanchuong"] if args.cmd == "all" else [args.cmd]
+    cmds = ["images", "audio", "bgm", "video", "spine", "chibi", "lore", "cg", "dongcoc", "hoanchuong"] if args.cmd == "all" else [args.cmd]
     rc = 0
     try:
         for c in cmds:
@@ -991,6 +1097,12 @@ def main() -> int:
                 rc |= run_export(ctx, image_entries(ctx, only), out / "Anh", False, args.workers)
             elif c == "audio":
                 rc |= run_export(ctx, audio_entries(ctx, getattr(args, "only", "")), out, True, args.workers)
+            elif c == "lua":
+                rc |= export_lua(ctx, out / f"Lua_{ctx.snap.name}")
+            elif c == "bgm":
+                rc |= export_bgm(ctx, out, args.workers)
+            elif c == "voice":
+                rc |= export_voice(ctx, out, args.workers, getattr(args, "only", ""))
             elif c == "video":
                 rc |= export_videos(ctx, ctx.index["VideoList"], out / "Video")
             elif c == "spine":
@@ -1004,6 +1116,12 @@ def main() -> int:
                 if not (lore / "INDEX.tsv").is_file():
                     story.build_lore(ctx, lore)
                 story.build_cg(ctx, lore, out / "CG_TheoTruyen")
+            elif c == "gallery":
+                import whmx_gallery
+                lore = out / f"Lore_{ctx.snap.name}"
+                if not (lore / "INDEX.tsv").is_file():
+                    story.build_lore(ctx, lore)
+                whmx_gallery.export_gallery(ctx, lore, out / f"Gallery_{ctx.snap.name}", dry=args.dry_run)
             elif c == "dongcoc":
                 story.build_dongcoc(ctx, out / "DongCoc_QuyDang")
             elif c == "hoanchuong":
